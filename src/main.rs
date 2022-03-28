@@ -1,3 +1,30 @@
+// TODO
+// Build kdtree and find X observations nearest the unknown
+// fit model automaticaly
+//   https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.curve_fit.html#scipy-optimize-curve-fit
+// support other models: Exponential, Linear, Gaussian
+//   https://mmaelicke.github.io/scikit-gstat/reference/models.html
+// parallelize the slow parts
+// cross-validation, MSPE on a subset of the original (removed prior to constructing empirical semivariogram)
+//
+// packaging:
+// python interface
+// make an API and write unit tests
+// error handling
+//
+// outputs:
+// calculate optimal raster grid (affine, shape) based on convex hull and range and cell size (> nugget)
+// interpolate over the grid in parallel, returning 2D array + affine (for rasterio to reconstruct a raster)
+// interpolate over hex grid or user-supplied points, returning a 1D array per feature
+//
+// variogram:
+// geodesic distance, great circle distance, ECEF 3D distance
+// Co-kriging
+// Trend elimination (UK)
+// Subsetting
+// Anisotropy
+// Bayesian estimation
+
 use std::error::Error;
 use std::fs::File;
 
@@ -73,20 +100,25 @@ fn main() -> Result<(), Box<dyn Error>> {
     // -------- Model specification
     // Create a model fit to the empirical variogram
     // TODO optimize this automatically
-    // let model = SphericalVariogramModel::new(0.0, 16500.0, 0.4);
-    let model = SphericalVariogramModel::new(2.5, 7.5, 10.0);
+    let model = SphericalVariogramModel::new(0.0, 16500.0, 0.4);
 
     // -------- Prediction (example)
     // right near an observation with a z of -749
-    // let pt = (-124.83669, 41.9079);
-    let pt = (5.0, 5.0);
+    let pt = (-124.83669, 41.9079);
+
+    // Example Box 6.2 in Burroughs and McDonnel, test.xyz
+    // let model = SphericalVariogramModel::new(2.5, 7.5, 10.0);
+    // let pt = (5.0, 5.0);
 
     // Identify pairs of data points
     // Rule of thumb: 64 nearest points
-    // TODO Note that these pairs do not need to be the same as what created the empirical variogram
+    // TODO Knn
+    //
+    // Note that these pairs do not need to be the same as what created the empirical variogram
+    // shadowing `samples` for convenience
     // IOW now that we have a variogram model, we can use a much smaller number of
     // samples in a local window.
-    // let samples = locs.iter().choose_multiple(&mut rng, 5);
+    let samples = locs.iter().choose_multiple(&mut rng, 956);
 
     // create matrix A
     eprintln!("Create and invert matrix A...");
@@ -109,9 +141,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // instatiate matrix and take inverse
     let a = DMatrix::from_vec(samples.len() + 1, samples.len() + 1, matrix_values);
-    eprintln!("{}", a);
+    // eprintln!("{}", a);
     let a_inv = a.try_inverse().expect("inverting matrix failed");
-    eprintln!("{}", a_inv);
+    // eprintln!("{}", a_inv);
 
     eprintln!("Prediction; create vector b ...");
 
@@ -125,7 +157,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     for s in samples.iter() {
         let dist = distance(&s, &unknown);
-        dbg!(dist);
         let modeled_semivariance = model.estimate(dist);
         vector_values.push(modeled_semivariance);
     }
@@ -150,8 +181,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     for (i, bsv) in b2.iter().enumerate() {
         estimation_variance += bsv * weights_vector[i];
     }
-    dbg!(b2);
-    dbg!(weights_vector);
 
     eprintln!(
         "predicted_value at {:?} is {} with {} standard deviation",
@@ -170,17 +199,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     //     // Compare empirical vs modelled semivariances
     //     println!("{} {}", lagbin.mean() / 2.0, model.estimate(lagbin.h));
     // }
-
-    // TODO calculate optimal raster grid (affine, shape) based on convex hull and range and cell size (> nugget)
-    // TODO interpolate over the grid in parallel, returning 2D array + affine (for rasterio to reconstruct a raster)
-
-    // Extras (futch)
-    // geodesic distance, great circle distance, ECEF 3D distance
-    // interpolate over hex grid or user-supplied points, returning a 1D array per feature
-    // Trend elimination (UK)
-    // Subsetting
-    // find X observations nearest the unknown
-    // Bayesian estimation
 
     Ok(())
 }
