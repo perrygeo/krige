@@ -218,7 +218,15 @@ fn main() -> Result<(), Box<dyn Error>> {
                 estimation_variance.sqrt()
             );
         } else {
-            eprintln!("NOT INVERTABLE");
+            eprint!("A is NOT INVERTABLE, try again... ");
+            let neighbors =
+                kdtree.nearest(&[pt.0, pt.1], args.max_neighbors - 2, &squared_euclidean)?;
+            let a = create_matrix_a(&neighbors, &model);
+            if let Some(a_inv) = a.try_inverse() {
+                eprintln!("INVERTABLE :-)");
+            } else {
+                eprintln!("Still NO GOOD :-(");
+            }
         }
     }
 
