@@ -13,3 +13,4 @@ serde = { version = "1", features = ["derive"] }
 rand = { version = "0.8.5" }
 itertools = { version = "0.10.3" }
 nalgebra = { version = "0.30.1" }
+kdtree = { version = "0.5.1" }
