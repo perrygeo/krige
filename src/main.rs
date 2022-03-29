@@ -32,7 +32,7 @@ use itertools::Itertools;
 use kdtree::distance::squared_euclidean;
 use kdtree::KdTree;
 use nalgebra::{DMatrix, DVector};
-use rand::{seq::IteratorRandom, thread_rng};
+use rand::{seq::IteratorRandom, thread_rng, Rng};
 
 use rust_interpolate::{
     calculate_variance, distance, parse_locations, LagBin, Location, SphericalVariogramModel,
@@ -56,79 +56,16 @@ struct Args {
     /// Number of lag bins for the empirical semivariogram
     #[clap(short, long, default_value_t = 256)]
     nbins: usize,
+
+    /// Max Number of neighboring data points to consider
+    #[clap(short, long, default_value_t = 64)]
+    max_neighbors: usize,
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let args = Args::parse();
-
-    // Parse XYZ Locations from input text
-    eprintln!("Parse XYZ file...");
-    let file = File::open(args.points)?;
-    let locs = parse_locations(file)?;
-
-    // Random sample
-    let mut rng = thread_rng();
-    let samples = locs.iter().choose_multiple(&mut rng, args.samples);
-
-    // -------- Create empirical semivariogram
-    eprintln!("Empirical semivariogram...");
-
-    // Create lag bin map, holding the sum and count (partials required to calculate the mean)
-    let mut variogram_bins = Vec::with_capacity(args.nbins);
-    for b in (0..args.nbins).into_iter() {
-        let prop = ((b as f64) + 1.0) / args.nbins as f64;
-        let h = args.range * prop;
-        variogram_bins.insert(b, LagBin::new(h));
-    }
-
-    // subset Pass 1:
-    // Test only unique pairs within the max range
-    // and create the semivariogram
-    for pair in samples.iter().combinations(2) {
-        let si = pair[0];
-        let sj = pair[1];
-
-        let dist = distance(&si, &sj);
-        if dist == 0.0 || dist > args.range {
-            continue;
-        }
-
-        let variance = calculate_variance(&si, &sj);
-
-        // should always be 0 to args.nbins
-        let lagbin_idx = (args.nbins as f64 * (dist / args.range)) as usize;
-
-        let lagbin = &mut variogram_bins[lagbin_idx];
-        lagbin.push(variance);
-    }
-
-    // -------- Create spatial index
-    eprint!("Creating spatial index...");
-    let mut kdtree = KdTree::new(2);
-    // Complete dataset pass 1
-    for loc in locs.iter() {
-        kdtree.add([loc.x, loc.y], loc)?;
-    }
-    eprintln!("built kdtree with {} pts", kdtree.size());
-
-    // -------- Model specification
-    // Create a model fit to the empirical variogram
-    // TODO optimize this automatically
-    let model = SphericalVariogramModel::new(0.0, 16500.0, 0.4);
-
-    // -------- Prediction (example)
-    // right near an observation with a z of -749
-    let pt = (-124.83669, 41.9079);
-
-    // Example Box 6.2 in Burroughs and McDonnel, test.xyz
-    // let model = SphericalVariogramModel::new(2.5, 7.5, 10.0);
-    // let pt = (5.0, 5.0);
-
-    // Identify nearby data points
-    let neighbors = kdtree.nearest(&[pt.0, pt.1], 32, &squared_euclidean)?;
-
-    // create matrix A
-    eprintln!("Create and invert matrix A...");
+fn create_matrix_a(
+    neighbors: &Vec<(f64, &&Location)>,
+    model: &SphericalVariogramModel,
+) -> DMatrix<f64> {
     let num_neighbors = neighbors.len();
     let mut matrix_values = Vec::with_capacity((num_neighbors + 1).pow(2));
     for (_, si) in neighbors.iter() {
@@ -146,13 +83,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     matrix_values.push(0.0);
 
-    // instatiate matrix and take inverse
-    let a = DMatrix::from_vec(num_neighbors + 1, num_neighbors + 1, matrix_values);
-    let a_inv = a.try_inverse().expect("inverting matrix failed");
+    DMatrix::from_vec(num_neighbors + 1, num_neighbors + 1, matrix_values)
+}
 
-    // distances from unknown pt to observations
-    // plug in distances to the variogram estimator to create vector b
-    eprintln!("Prediction; create vector b ...");
+fn create_vector_b(
+    pt: (f64, f64),
+    neighbors: &Vec<(f64, &&Location)>,
+    model: &SphericalVariogramModel,
+) -> DVector<f64> {
+    let num_neighbors = neighbors.len();
     let mut vector_values = Vec::with_capacity(num_neighbors + 1);
     let unknown = Location {
         x: pt.0,
@@ -161,16 +100,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     for (_, s) in neighbors.iter() {
         let dist = distance(&s, &unknown);
+        // plug in distances to the variogram estimator to create vector b
         let modeled_semivariance = model.estimate(dist);
         vector_values.push(modeled_semivariance);
     }
     // Add a final row to ensure weights sum to one
     vector_values.push(1.0);
 
-    let b = DVector::from_vec(vector_values);
+    DVector::from_vec(vector_values)
+}
 
+fn predict(
+    a_inv: &DMatrix<f64>,
+    b: &DVector<f64>,
+    neighbors: &Vec<(f64, &&Location)>,
+) -> (f64, f64) {
     // Do the matrix multiplication
-    let weights_vector = a_inv * &b;
+    let weights_vector = a_inv * b;
 
     // predict the unknown value at pt using sum(weight * observed_z)
     let mut predicted_value = 0.0;
@@ -186,19 +132,94 @@ fn main() -> Result<(), Box<dyn Error>> {
         estimation_variance += bsv * weights_vector[i];
     }
 
-    eprintln!(
-        "predicted_value at {:?} is {} with {} standard deviation",
-        pt,
-        predicted_value,
-        estimation_variance.sqrt()
-    );
+    (predicted_value, estimation_variance)
+}
 
-    // -------- Outputs
-    for lagbin in variogram_bins.iter() {
-        // Empirical Semivariogram
-        println!("{} {}", lagbin.h, lagbin.mean() / 2.0,);
-        // // Compare empirical vs modelled semivariances
-        // println!("{} {}", lagbin.mean() / 2.0, model.estimate(lagbin.h));
+fn empirical_semivariogram(samples: Vec<&Location>, nbins: usize, range: f64) -> Vec<LagBin> {
+    // Create lag bin map, holding the sum and count (partials required to calculate the mean)
+    let mut variogram_bins = Vec::with_capacity(nbins);
+    for b in (0..nbins).into_iter() {
+        let prop = ((b as f64) + 1.0) / nbins as f64;
+        let h = range * prop;
+        variogram_bins.insert(b, LagBin::new(h));
+    }
+
+    // subset Pass 1:
+    // Test only unique pairs within the max range
+    // and create the semivariogram
+    for pair in samples.iter().combinations(2) {
+        let si = pair[0];
+        let sj = pair[1];
+
+        let dist = distance(&si, &sj);
+        if dist == 0.0 || dist > range {
+            continue;
+        }
+
+        let variance = calculate_variance(&si, &sj);
+
+        // should always be 0 to args.nbins
+        let lagbin_idx = (nbins as f64 * (dist / range)) as usize;
+
+        let lagbin = &mut variogram_bins[lagbin_idx];
+        lagbin.push(variance);
+    }
+    variogram_bins
+}
+
+fn fit_model(variogram_bins: Vec<LagBin>) -> SphericalVariogramModel {
+    // TODO use empirical data to optimize the parameters
+    SphericalVariogramModel::new(0.0, 16500.0, 0.4)
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let args = Args::parse();
+    let mut rng = thread_rng();
+
+    // Parse XYZ Locations from input text
+    eprintln!("Parse XYZ file...");
+    let file = File::open(args.points)?;
+    let locs = parse_locations(file)?;
+
+    // -------- Create spatial index, full dataset
+    let mut kdtree = KdTree::new(2);
+    for loc in locs.iter() {
+        kdtree.add([loc.x, loc.y], loc)?;
+    }
+
+    // -------- Create empirical semivariogram from a sample
+    eprintln!("Empirical semivariogram...");
+    let samples = locs.iter().choose_multiple(&mut rng, args.samples);
+    let variogram_bins = empirical_semivariogram(samples, args.nbins, args.range);
+    let model = fit_model(variogram_bins);
+
+    // -------- Prediction (example)
+    let n_predictions = 65536; // 256x256 grid
+    for _ in 0..n_predictions {
+        let x: f64 = thread_rng().gen_range(-125.02..-124.6);
+        let y: f64 = thread_rng().gen_range(41.48..42.02);
+        let pt = (x, y);
+
+        // Identify nearby data points
+        let neighbors = kdtree.nearest(&[pt.0, pt.1], args.max_neighbors, &squared_euclidean)?;
+
+        // Performing kriging
+        let a = create_matrix_a(&neighbors, &model);
+        let b = create_vector_b(pt, &neighbors, &model);
+
+        if let Some(a_inv) = a.try_inverse() {
+            let (predicted_value, estimation_variance) = predict(&a_inv, &b, &neighbors);
+
+            println!(
+                r#"{{"type": "Feature", "geometry": {{ "type": "Point", "coordinates": [{}, {}] }}, "properties": {{ "value": {}, "stdev": {}}}}}"#,
+                pt.0,
+                pt.1,
+                predicted_value,
+                estimation_variance.sqrt()
+            );
+        } else {
+            eprintln!("NOT INVERTABLE");
+        }
     }
 
     Ok(())
