@@ -97,30 +97,33 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // -------- Prediction (example)
     eprintln!("Making predictions ...");
-    let n_predictions = 65536; // 256x256 grid
-    for _ in 0..n_predictions {
-        let x: f64 = thread_rng().gen_range(-125.02..-124.6);
-        let y: f64 = thread_rng().gen_range(41.48..42.02);
-        let pt = (x, y);
+    // Create a 2D raster grid
+    let shape = (256, 256);
 
-        // Identify nearby data points
-        let neighbors = kdtree.nearest(&[pt.0, pt.1], args.max_neighbors, &squared_euclidean)?;
+    for i in (0..shape.0) {
+        for j in (0..shape.1) {
+            let x: f64 = thread_rng().gen_range(-125.02..-124.6);
+            let y: f64 = thread_rng().gen_range(41.48..42.02);
+            let pt = (x, y);
 
-        // Performing kriging
-        let a = create_matrix_a(&neighbors, &model);
-        let b = create_vector_b(pt, &neighbors, &model);
+            // Identify nearby data points
+            let neighbors =
+                kdtree.nearest(&[pt.0, pt.1], args.max_neighbors, &squared_euclidean)?;
 
-        let a_inv = a.try_inverse().unwrap();
+            // Performing kriging
+            let a = create_matrix_a(&neighbors, &model);
+            let b = create_vector_b(pt, &neighbors, &model);
+            let a_inv = a.try_inverse().unwrap();
+            let (predicted_value, estimation_variance) = predict(&a_inv, &b, &neighbors);
 
-        let (predicted_value, estimation_variance) = predict(&a_inv, &b, &neighbors);
-
-        println!(
-            r#"{{"type": "Feature", "geometry": {{ "type": "Point", "coordinates": [{}, {}] }}, "properties": {{ "value": {}, "stdev": {}}}}}"#,
-            pt.0,
-            pt.1,
-            predicted_value,
-            estimation_variance.sqrt()
-        );
+            println!(
+                r#"{{"type":"Feature","geometry":{{"type":"Point","coordinates":[{},{}]}},"properties":{{"value":{},"stdev":{}}}}}"#,
+                pt.0,
+                pt.1,
+                predicted_value,
+                estimation_variance.sqrt()
+            );
+        }
     }
 
     Ok(())
