@@ -1,6 +1,9 @@
 use std::error::Error;
 use std::fs::File;
 
+use itertools::Itertools;
+use nalgebra::{DMatrix, DVector};
+
 /// XYZ Locations
 #[derive(Debug, serde::Deserialize)]
 pub struct Location {
@@ -87,6 +90,116 @@ pub fn parse_locations(file: File) -> Result<Vec<Location>, Box<dyn Error>> {
     }
 
     Ok(locations)
+}
+
+pub fn create_matrix_a(
+    neighbors: &Vec<(f64, &&Location)>,
+    model: &SphericalVariogramModel,
+) -> DMatrix<f64> {
+    let num_neighbors = neighbors.len();
+    let mut matrix_values = Vec::with_capacity((num_neighbors + 1).pow(2));
+    for (_, si) in neighbors.iter() {
+        for (_, sj) in neighbors.iter() {
+            let dist = distance(&si, &sj);
+            let modeled_semivariance = model.estimate(dist);
+            matrix_values.push(modeled_semivariance);
+        }
+        // Add a column, ensures the weights sum to one
+        matrix_values.push(1.0);
+    }
+    // Add a final row to ensure weights sum to one
+    for _ in (0..num_neighbors).into_iter() {
+        matrix_values.push(1.0);
+    }
+    matrix_values.push(0.0);
+
+    DMatrix::from_vec(num_neighbors + 1, num_neighbors + 1, matrix_values)
+}
+
+pub fn create_vector_b(
+    pt: (f64, f64),
+    neighbors: &Vec<(f64, &&Location)>,
+    model: &SphericalVariogramModel,
+) -> DVector<f64> {
+    let num_neighbors = neighbors.len();
+    let mut vector_values = Vec::with_capacity(num_neighbors + 1);
+    let unknown = Location {
+        x: pt.0,
+        y: pt.1,
+        z: 0.0,
+    };
+    for (_, s) in neighbors.iter() {
+        let dist = distance(&s, &unknown);
+        // plug in distances to the variogram estimator to create vector b
+        let modeled_semivariance = model.estimate(dist);
+        vector_values.push(modeled_semivariance);
+    }
+    // Add a final row to ensure weights sum to one
+    vector_values.push(1.0);
+
+    DVector::from_vec(vector_values)
+}
+
+pub fn predict(
+    a_inv: &DMatrix<f64>,
+    b: &DVector<f64>,
+    neighbors: &Vec<(f64, &&Location)>,
+) -> (f64, f64) {
+    // Do the matrix multiplication
+    let weights_vector = a_inv * b;
+
+    // predict the unknown value at pt using sum(weight * observed_z)
+    let mut predicted_value = 0.0;
+    for (i, (_, s)) in neighbors.iter().enumerate() {
+        predicted_value += s.z * weights_vector[i];
+    }
+
+    // estimate the kriging variance at a point
+    // error in z units is the stddev (the sqrt of variance)
+    // Should be possible to do in matrix methods: let estvar = (b2 * weights_vector).sum();
+    let mut estimation_variance = 0.0;
+    for (i, bsv) in b.iter().enumerate() {
+        estimation_variance += bsv * weights_vector[i];
+    }
+
+    (predicted_value, estimation_variance)
+}
+
+pub fn empirical_semivariogram(samples: Vec<&Location>, nbins: usize, range: f64) -> Vec<LagBin> {
+    // Create lag bin map, holding the sum and count (partials required to calculate the mean)
+    let mut variogram_bins = Vec::with_capacity(nbins);
+    for b in (0..nbins).into_iter() {
+        let prop = ((b as f64) + 1.0) / nbins as f64;
+        let h = range * prop;
+        variogram_bins.insert(b, LagBin::new(h));
+    }
+
+    // subset Pass 1:
+    // Test only unique pairs within the max range
+    // and create the semivariogram
+    for pair in samples.iter().combinations(2) {
+        let si = pair[0];
+        let sj = pair[1];
+
+        let dist = distance(&si, &sj);
+        if dist == 0.0 || dist > range {
+            continue;
+        }
+
+        let variance = calculate_variance(&si, &sj);
+
+        // should always be 0 to args.nbins
+        let lagbin_idx = (nbins as f64 * (dist / range)) as usize;
+
+        let lagbin = &mut variogram_bins[lagbin_idx];
+        lagbin.push(variance);
+    }
+    variogram_bins
+}
+
+pub fn fit_model(_variogram_bins: Vec<LagBin>) -> SphericalVariogramModel {
+    // TODO use empirical data to optimize the parameters
+    SphericalVariogramModel::new(0., 16500., 0.4)
 }
 
 #[cfg(test)]
