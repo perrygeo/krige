@@ -35,6 +35,7 @@ impl LagBin {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct SphericalVariogramModel {
     c0: f64,
     c1: f64,

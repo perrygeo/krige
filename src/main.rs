@@ -1,9 +1,9 @@
 // TODO
+// calculate optimal raster grid (affine, shape) based on bounding box
 // fit model automaticaly
 //   https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.curve_fit.html#scipy-optimize-curve-fit
 // support other models: Exponential, Linear, Gaussian
 //   https://mmaelicke.github.io/scikit-gstat/reference/models.html
-// parallelize the slow parts
 // cross-validation, MSPE on a subset of the original (removed prior to constructing empirical semivariogram)
 //
 // packaging:
@@ -12,7 +12,6 @@
 // error handling
 //
 // outputs:
-// calculate optimal raster grid (affine, shape) based on convex hull and range and cell size (> nugget)
 // interpolate over the grid in parallel, returning 2D array + affine (for rasterio to reconstruct a raster)
 // interpolate over hex grid or user-supplied points, returning a 1D array per feature
 //
@@ -29,8 +28,7 @@ use std::fs::File;
 
 use clap::Parser;
 use itertools::Itertools;
-use kdtree::distance::squared_euclidean;
-use kdtree::KdTree;
+use kdtree::{distance::squared_euclidean, KdTree};
 use nalgebra::{DMatrix, DVector};
 use rand::{seq::IteratorRandom, thread_rng, Rng};
 
@@ -167,9 +165,9 @@ fn empirical_semivariogram(samples: Vec<&Location>, nbins: usize, range: f64) ->
     variogram_bins
 }
 
-fn fit_model(variogram_bins: Vec<LagBin>) -> SphericalVariogramModel {
+fn fit_model(_variogram_bins: Vec<LagBin>) -> SphericalVariogramModel {
     // TODO use empirical data to optimize the parameters
-    SphericalVariogramModel::new(0.0, 16500.0, 0.4)
+    SphericalVariogramModel::new(0., 16500., 0.4)
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -182,18 +180,35 @@ fn main() -> Result<(), Box<dyn Error>> {
     let locs = parse_locations(file)?;
 
     // -------- Create spatial index, full dataset
+    eprintln!("Create spatial index and removing dups...");
     let mut kdtree = KdTree::new(2);
+
+    const EPSILON: f64 = 1e-9 * 1e-9;
+
     for loc in locs.iter() {
+        // If existing points, check to avoid dups
+        // there must be a better way!
+        let nns = kdtree.nearest(&[loc.x, loc.y], 1, &squared_euclidean)?;
+        if nns.len() > 0 {
+            let (sqdist, _existing) = nns[0];
+            if sqdist < EPSILON {
+                // Duplicate point exists, skipping
+                continue;
+            }
+        }
+
+        // New unique point
         kdtree.add([loc.x, loc.y], loc)?;
     }
 
     // -------- Create empirical semivariogram from a sample
-    eprintln!("Empirical semivariogram...");
+    eprintln!("Empirical semivariogram ...");
     let samples = locs.iter().choose_multiple(&mut rng, args.samples);
     let variogram_bins = empirical_semivariogram(samples, args.nbins, args.range);
     let model = fit_model(variogram_bins);
 
     // -------- Prediction (example)
+    eprintln!("Making predictions ...");
     let n_predictions = 65536; // 256x256 grid
     for _ in 0..n_predictions {
         let x: f64 = thread_rng().gen_range(-125.02..-124.6);
@@ -218,15 +233,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 estimation_variance.sqrt()
             );
         } else {
-            eprint!("A is NOT INVERTABLE, try again... ");
-            let neighbors =
-                kdtree.nearest(&[pt.0, pt.1], args.max_neighbors - 2, &squared_euclidean)?;
-            let a = create_matrix_a(&neighbors, &model);
-            if let Some(a_inv) = a.try_inverse() {
-                eprintln!("INVERTABLE :-)");
-            } else {
-                eprintln!("Still NO GOOD :-(");
-            }
+            eprintln!("A is NOT INVERTABLE, skipping... ");
         }
     }
 
