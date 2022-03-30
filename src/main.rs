@@ -23,12 +23,13 @@
 // Anisotropy
 // Bayesian estimation
 
+use itertools::Itertools;
 use std::error::Error;
 use std::fs::File;
 
 use clap::Parser;
 use kdtree::{distance::squared_euclidean, KdTree};
-use rand::{seq::IteratorRandom, thread_rng, Rng};
+use rand::{seq::IteratorRandom, thread_rng};
 
 use rust_interpolate::{
     create_matrix_a, create_vector_b, empirical_semivariogram, fit_model, parse_locations, predict,
@@ -69,10 +70,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // -------- Create spatial index, full dataset
     eprintln!("Create spatial index and removing dups...");
-    let mut kdtree = KdTree::new(2);
-
     const EPSILON: f64 = 1e-9 * 1e-9;
-
+    let mut kdtree = KdTree::new(2);
     for loc in locs.iter() {
         // If existing points, check to avoid dups
         // there must be a better way!
@@ -84,7 +83,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 continue;
             }
         }
-
         // New unique point
         kdtree.add([loc.x, loc.y], loc)?;
     }
@@ -95,15 +93,31 @@ fn main() -> Result<(), Box<dyn Error>> {
     let variogram_bins = empirical_semivariogram(samples, args.nbins, args.range);
     let model = fit_model(variogram_bins);
 
-    // -------- Prediction (example)
-    eprintln!("Making predictions ...");
-    // Create a 2D raster grid
-    let shape = (256, 256);
+    // -------- Prediction
+    // TODO estimate these
+    let cellsize: f64 = 0.0005;
+    let extent = (-125.0, 41.5, -124.7, 42.0);
 
-    for i in (0..shape.0) {
-        for j in (0..shape.1) {
-            let x: f64 = thread_rng().gen_range(-125.02..-124.6);
-            let y: f64 = thread_rng().gen_range(41.48..42.02);
+    // Create a 2D raster grid
+    let ulorigin = (extent.0, extent.3);
+    let llorigin = (extent.0, extent.1);
+    let rows = ((extent.3 - extent.1) / cellsize).ceil() as usize;
+    let cols = ((extent.2 - extent.0) / cellsize).ceil() as usize;
+    eprintln!("Making predictions on grid... {} x {}", rows, cols);
+
+    println!("ncols {}", cols);
+    println!("nrows {}", rows);
+    // TODO alignment; add halfcell?
+    println!("xllcorner {}", llorigin.0);
+    println!("yllcorner {}", llorigin.1);
+    println!("cellsize {}", cellsize);
+    println!("NODATA_value -9999");
+
+    for i in 0..rows {
+        let y = ulorigin.1 - (i as f64 * cellsize);
+        let mut row = Vec::with_capacity(cols);
+        for j in 0..cols {
+            let x = ulorigin.0 + (j as f64 * cellsize);
             let pt = (x, y);
 
             // Identify nearby data points
@@ -114,16 +128,19 @@ fn main() -> Result<(), Box<dyn Error>> {
             let a = create_matrix_a(&neighbors, &model);
             let b = create_vector_b(pt, &neighbors, &model);
             let a_inv = a.try_inverse().unwrap();
-            let (predicted_value, estimation_variance) = predict(&a_inv, &b, &neighbors);
+            let (predicted_value, _estimation_variance) = predict(&a_inv, &b, &neighbors);
+            row.push(predicted_value);
 
-            println!(
-                r#"{{"type":"Feature","geometry":{{"type":"Point","coordinates":[{},{}]}},"properties":{{"value":{},"stdev":{}}}}}"#,
-                pt.0,
-                pt.1,
-                predicted_value,
-                estimation_variance.sqrt()
-            );
+            // GeoJSON
+            // println!(
+            //     r#"{{"type":"Feature","geometry":{{"type":"Point","coordinates":[{},{}]}},"properties":{{"value":{},"stdev":{}}}}}"#,
+            //     pt.0,
+            //     pt.1,
+            //     predicted_value,
+            //     estimation_variance.sqrt()
+            // );
         }
+        println!("{}", row.iter().join(" "));
     }
 
     Ok(())
