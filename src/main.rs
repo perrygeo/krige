@@ -1,32 +1,6 @@
-// TODO
-// calculate optimal raster grid (affine, shape) based on bounding box
-// fit model automaticaly
-//   https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.curve_fit.html#scipy-optimize-curve-fit
-// support other models: Exponential, Linear, Gaussian
-//   https://mmaelicke.github.io/scikit-gstat/reference/models.html
-// cross-validation, MSPE on a subset of the original (removed prior to constructing empirical semivariogram)
-//
-// packaging:
-// python interface
-// make an API and write unit tests
-// error handling
-//
-// outputs:
-// interpolate over the grid in parallel, returning 2D array + affine (for rasterio to reconstruct a raster)
-// interpolate over hex grid or user-supplied points, returning a 1D array per feature
-//
-// variogram:
-// geodesic distance, great circle distance, ECEF 3D distance
-// Co-kriging
-// Trend elimination (UK)
-// Subsetting
-// Anisotropy
-// Bayesian estimation
-
 use itertools::Itertools;
 use std::error::Error;
 use std::fs::File;
-// simd::f64x2};
 
 use clap::Parser;
 use kdtree::{distance::squared_euclidean, KdTree};
@@ -87,7 +61,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     eprintln!("Create spatial index and removing dups...");
     const EPSILON: f64 = 1e-9 * 1e-9;
     let mut kdtree = KdTree::new(2);
-    // while we're at it, calculate the bounding box
+
+    // while we're at it, calculate the bounding coordinates
     let mut extent = [
         f64::INFINITY,
         f64::INFINITY,
@@ -95,8 +70,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         f64::NEG_INFINITY,
     ];
     for loc in locs.iter() {
-        // If existing points, check to avoid dups
-        // there must be a better way!
+        // If existing points, check to avoid dups, there must be a better way!
         let nns = kdtree.nearest(&[loc.x, loc.y], 1, &squared_euclidean)?;
         if nns.len() > 0 {
             let (sqdist, _existing) = nns[0];
@@ -119,7 +93,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // -------- Prediction
     // estimate cellsize such that each row is roughly x columns wide to cover the extent
-    let cellsize: f64 = (extent[2] - extent[0]) / 128.;
+    let cellsize: f64 = (extent[2] - extent[0]) / 256.;
 
     // Create a 2D raster grid
     let halfcell = cellsize / 2.0;
@@ -127,7 +101,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let rows = ((extent[3] - extent[1]) / cellsize).ceil() as usize;
     let cols = ((extent[2] - extent[0]) / cellsize).ceil() as usize;
     // alignment in QGIS seems to require the upper-left corner of the lower-left cell
-    // whereas the ascii grid spec uses the llcorner
+    // whereas the ascii grid spec says LOWER-left corner of the lower-left cell
     let llcorner = (ulorigin.0, ulorigin.1 - (cellsize * rows as f64));
 
     eprintln!(
