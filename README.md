@@ -31,12 +31,16 @@ Input: a text file with X, Y and Z values, tab-delimited. (see `test.xyz`)
 
 <img src="img/pts.png" height="400px">
 
-Output: to stdout, a text file in [ArcInfo ASCII Grid format](https://www.loc.gov/preservation/digital/formats/fdd/fdd000421.shtml)
+Outputs:
+
+1. Prediction grid in [ArcInfo ASCII Grid format](https://www.loc.gov/preservation/digital/formats/fdd/fdd000421.shtml)
+2. Standard deviation grid in [ArcInfo ASCII Grid format](https://www.loc.gov/preservation/digital/formats/fdd/fdd000421.shtml)
+3. Prediction points as geojson features (contains both predicted value and standard deviation as properties)
 
 <img src="img/grid.png" height="400px">
 
 ```
-time ./target/release/rust-interpolate --points test.xyz --range 0.2 > /tmp/estimates.grd
+time ./target/release/rust-interpolate test2.xyz
 ```
 
 The stderr logs

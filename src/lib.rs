@@ -4,6 +4,11 @@ use std::fs::File;
 use itertools::Itertools;
 use nalgebra::{DMatrix, DVector};
 
+use plotlib::page::Page;
+use plotlib::repr::Plot;
+use plotlib::style::{PointMarker, PointStyle};
+use plotlib::view::ContinuousView;
+
 /// XYZ Locations
 #[derive(Debug, serde::Deserialize)]
 pub struct Location {
@@ -197,9 +202,35 @@ pub fn empirical_semivariogram(samples: Vec<&Location>, nbins: usize, range: f64
     variogram_bins
 }
 
-pub fn fit_model(_variogram_bins: Vec<LagBin>) -> SphericalVariogramModel {
+pub fn render_variogram_text(variogram_bins: &Vec<LagBin>) -> String {
+    let pairs: Vec<(f64, f64)> = variogram_bins
+        .iter()
+        .map(|b| (b.h, b.sum / b.count as f64))
+        .collect();
+
+    let s1 = Plot::new(pairs).point_style(PointStyle::new().marker(PointMarker::Cross));
+    let v = ContinuousView::new()
+        .add(s1)
+        // .x_range(-5., 10.)
+        // .y_range(-2., 6.)
+        .x_label("Lag Distance (h)")
+        .y_label("Semivariance");
+
+    Page::single(&v).dimensions(80, 30).to_text().unwrap()
+}
+
+pub fn fit_model(
+    variogram_bins: Vec<LagBin>,
+    init_c1: f64,
+    init_a: f64,
+) -> SphericalVariogramModel {
+    // c1 = sill
+    // a = range
     // TODO use empirical data to optimize the parameters
-    SphericalVariogramModel::new(0., 16500., 0.4)
+    eprintln!("{}", render_variogram_text(&variogram_bins));
+    let init_variogram = SphericalVariogramModel::new(0., init_c1, init_a);
+    eprintln!("{:?}", init_variogram);
+    init_variogram
 }
 
 #[cfg(test)]
