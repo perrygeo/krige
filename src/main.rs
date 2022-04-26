@@ -8,7 +8,8 @@ use kdtree::{distance::squared_euclidean, KdTree};
 use rand::{seq::IteratorRandom, thread_rng};
 
 use rust_interpolate::{
-    create_matrix_a, create_vector_b, empirical_semivariogram, fit_model, parse_locations, predict,
+    create_matrix_a, create_vector_b, empirical_semivariogram, estimated_sill, fit_model,
+    parse_locations, predict,
 };
 
 #[derive(Parser, Debug)]
@@ -22,11 +23,11 @@ struct Args {
     samples: usize,
 
     /// Number of lag bins for the empirical semivariogram
-    #[clap(short, long, default_value_t = 128)]
+    #[clap(short, long, default_value_t = 256)]
     nbins: usize,
 
     /// Max Number of neighboring data points to consider
-    #[clap(short, long, default_value_t = 16)]
+    #[clap(short, long, default_value_t = 8)]
     max_neighbors: usize,
 
     /// Target width of the output raster
@@ -66,7 +67,7 @@ fn adjust_extent(extent: &mut [f64], x: f64, y: f64) {
     }
 }
 
-fn estimated_range(extent: &[f64]) -> f64 {
+fn estimated_range(extent: &[f64; 4]) -> f64 {
     let width = extent[2] - extent[0];
     let height = extent[3] - extent[1];
     (height + width) / 1.5
@@ -139,7 +140,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     eprintln!("Empirical semivariogram ...");
     let samples = locs.iter().choose_multiple(&mut rng, args.samples);
     let variogram_bins = empirical_semivariogram(samples, args.nbins, range);
-    let model = fit_model(variogram_bins, 45000., 0.32);
+    let init_sill = estimated_sill(&variogram_bins);
+    let model = fit_model(variogram_bins, init_sill, range);
 
     // -------- Prediction
     // estimate cellsize such that each row is roughly x columns wide to cover the extent

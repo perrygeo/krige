@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::f64::{INFINITY, NEG_INFINITY};
 use std::fs::File;
 
 use itertools::Itertools;
@@ -8,6 +9,11 @@ use plotlib::page::Page;
 use plotlib::repr::Plot;
 use plotlib::style::{PointMarker, PointStyle};
 use plotlib::view::ContinuousView;
+
+use ndarray::prelude::*;
+
+use optimize::Minimizer;
+use optimize::NelderMeadBuilder;
 
 /// XYZ Locations
 #[derive(Debug, serde::Deserialize)]
@@ -202,15 +208,25 @@ pub fn empirical_semivariogram(samples: Vec<&Location>, nbins: usize, range: f64
     variogram_bins
 }
 
-pub fn render_variogram_text(variogram_bins: &Vec<LagBin>) -> String {
-    let pairs: Vec<(f64, f64)> = variogram_bins
+pub fn render_variogram_text(
+    variogram_bins: &Vec<LagBin>,
+    model: &SphericalVariogramModel,
+) -> String {
+    let observed: Vec<(f64, f64)> = variogram_bins
         .iter()
         .map(|b| (b.h, b.sum / b.count as f64))
         .collect();
 
-    let s1 = Plot::new(pairs).point_style(PointStyle::new().marker(PointMarker::Cross));
+    let modeled: Vec<(f64, f64)> = variogram_bins
+        .iter()
+        .map(|b| (b.h, model.estimate(b.h)))
+        .collect();
+
+    let s1 = Plot::new(observed).point_style(PointStyle::new().marker(PointMarker::Cross));
+    let s2 = Plot::new(modeled).point_style(PointStyle::new().marker(PointMarker::Circle));
     let v = ContinuousView::new()
         .add(s1)
+        .add(s2)
         // .x_range(-5., 10.)
         // .y_range(-2., 6.)
         .x_label("Lag Distance (h)")
@@ -224,13 +240,90 @@ pub fn fit_model(
     init_c1: f64,
     init_a: f64,
 ) -> SphericalVariogramModel {
+    // c0 = nugget
     // c1 = sill
     // a = range
-    // TODO use empirical data to optimize the parameters
-    eprintln!("{}", render_variogram_text(&variogram_bins));
-    let init_variogram = SphericalVariogramModel::new(0., init_c1, init_a);
-    eprintln!("{:?}", init_variogram);
-    init_variogram
+
+    // Our objective function to minimize
+    // Use clojure to capture the empirical variogram_bins
+    let objective_function = |params: ArrayView1<f64>| {
+        // Create model
+        let c0 = params[0];
+        let c1 = params[1];
+        let a = params[2];
+        let variogram = SphericalVariogramModel::new(c0, c1, a);
+
+        // Iterate through variogram bins and measure residual sum of squares
+        let rss: Vec<f64> = variogram_bins
+            .iter()
+            .map(|bin| {
+                let actual = bin.sum / bin.count as f64;
+                if actual.is_nan() {
+                    0.
+                } else {
+                    let estimated = variogram.estimate(bin.h);
+                    // not true sum of squares - we scale by the lag dist
+                    // to avoid the influence of outliers at high h
+                    ((actual - estimated) / bin.h).powf(2.0)
+                }
+            })
+            .collect();
+
+        // Root Mean Square Error
+        let n = rss.len();
+        let rmse = (rss.into_iter().sum::<f64>() / n as f64).sqrt();
+
+        if c0 < 0. {
+            // Penalize negatives to enforce the constraint
+            rmse * -200. * c0
+        } else {
+            rmse
+        }
+    };
+
+    // Set the starting guess
+    let args = Array::from_vec(vec![0.0, init_c1, init_a]);
+
+    // Run the optimization
+    let minimizer = NelderMeadBuilder::default()
+        .maxiter(80_000)
+        .maxfun(80_000)
+        .ftol(1000.)
+        .build()
+        .unwrap();
+    let params = minimizer.minimize(&objective_function, args.view());
+
+    // Create model
+    let c0 = params[0];
+    let c0 = {
+        if c0 < 0. {
+            0.
+        } else {
+            c0
+        }
+    };
+
+    let c1 = params[1];
+    let a = params[2];
+    let model = SphericalVariogramModel::new(c0, c1, a);
+    eprintln!("{}", render_variogram_text(&variogram_bins, &model));
+    eprintln!("{:?}", model);
+    model
+}
+
+pub fn estimated_sill(bins: &Vec<LagBin>) -> f64 {
+    let mut maxval: f64 = NEG_INFINITY;
+    let mut minval: f64 = INFINITY;
+    for bin in bins.iter() {
+        let val = bin.sum / bin.count as f64;
+        if val > maxval {
+            maxval = val;
+        }
+        if val < minval {
+            minval = val;
+        }
+    }
+    (maxval + minval) / 2.0
 }
 
 #[cfg(test)]
