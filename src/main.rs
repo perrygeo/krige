@@ -8,8 +8,8 @@ use kdtree::{distance::squared_euclidean, KdTree};
 use rand::{seq::IteratorRandom, thread_rng};
 
 use rust_interpolate::{
-    create_matrix_a, create_vector_b, empirical_semivariogram, estimated_sill, fit_model,
-    parse_locations, predict,
+    create_matrix_a, create_vector_b, empirical_semivariogram, estimated_sill, fit_gaussian_model,
+    fit_spherical_model, parse_locations, predict,
 };
 
 #[derive(Parser, Debug)]
@@ -141,7 +141,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let samples = locs.iter().choose_multiple(&mut rng, args.samples);
     let variogram_bins = empirical_semivariogram(samples, args.nbins, range);
     let init_sill = estimated_sill(&variogram_bins);
-    let model = fit_model(variogram_bins, init_sill, range);
+    let model = fit_gaussian_model(variogram_bins, init_sill, range);
 
     // -------- Prediction
     // estimate cellsize such that each row is roughly x columns wide to cover the extent

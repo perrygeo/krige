@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::f64::consts::E;
 use std::f64::{INFINITY, NEG_INFINITY};
 use std::fs::File;
 
@@ -49,6 +50,12 @@ impl LagBin {
     }
 }
 
+pub trait VariogramModel {
+    fn estimate(&self, lag: f64) -> f64;
+}
+
+/// Spherical Semivariogram Model
+/// Appropriate for spatial phenomenon with a clear transition point
 #[derive(Clone, Debug)]
 pub struct SphericalVariogramModel {
     c0: f64,
@@ -60,22 +67,44 @@ impl SphericalVariogramModel {
     pub fn new(c0: f64, c1: f64, a: f64) -> Self {
         SphericalVariogramModel { c0, c1, a }
     }
+}
 
-    pub fn estimate(&self, lag: f64) -> f64 {
-        let h;
-        if lag < 0.0 {
-            h = lag.abs();
-        } else {
-            h = lag;
-        }
+impl VariogramModel for SphericalVariogramModel {
+    fn estimate(&self, lag: f64) -> f64 {
+        let h = lag.abs();
 
         if h == 0.0 {
-            self.c0 // or zero?
+            // Lag of zero implies exact same point, use the nugget
+            self.c0
         } else if h > self.a {
+            // Lag greater than range, use the nugget + sill
             self.c0 + self.c1
         } else {
+            // Lag is within range, calcululate
             self.c0 + self.c1 * (((3.0 * h) / (2.0 * self.a)) - ((h / self.a).powf(3.0) / 2.0))
         }
+    }
+}
+
+/// Gaussian Semivariogram Model
+/// Appropriate for spatial phenomenon with a smoothly varying pattern
+#[derive(Clone, Debug)]
+pub struct GaussianVariogramModel {
+    c0: f64,
+    c1: f64,
+    a: f64,
+}
+
+impl GaussianVariogramModel {
+    pub fn new(c0: f64, c1: f64, a: f64) -> Self {
+        GaussianVariogramModel { c0, c1, a }
+    }
+}
+
+impl VariogramModel for GaussianVariogramModel {
+    fn estimate(&self, lag: f64) -> f64 {
+        let h = lag.abs();
+        self.c0 + self.c1 * (1. - E.powf(-1. * (h.powf(2.) / self.a.powf(2.))))
     }
 }
 
@@ -103,9 +132,9 @@ pub fn parse_locations(file: File) -> Result<Vec<Location>, Box<dyn Error>> {
     Ok(locations)
 }
 
-pub fn create_matrix_a(
+pub fn create_matrix_a<V: VariogramModel>(
     neighbors: &Vec<(f64, &&Location)>,
-    model: &SphericalVariogramModel,
+    model: &V,
 ) -> DMatrix<f64> {
     let num_neighbors = neighbors.len();
     let mut matrix_values = Vec::with_capacity((num_neighbors + 1).pow(2));
@@ -127,10 +156,10 @@ pub fn create_matrix_a(
     DMatrix::from_vec(num_neighbors + 1, num_neighbors + 1, matrix_values)
 }
 
-pub fn create_vector_b(
+pub fn create_vector_b<V: VariogramModel>(
     pt: (f64, f64),
     neighbors: &Vec<(f64, &&Location)>,
-    model: &SphericalVariogramModel,
+    model: &V,
 ) -> DVector<f64> {
     let num_neighbors = neighbors.len();
     let mut vector_values = Vec::with_capacity(num_neighbors + 1);
@@ -167,7 +196,7 @@ pub fn predict(
 
     // estimate the kriging variance at a point
     // error in z units is the stddev (the sqrt of variance)
-    // Should be possible to do in matrix methods: let estvar = (b2 * weights_vector).sum();
+    // TODO should be possible to do in matrix methods: let estvar = (b2 * weights_vector).sum();
     let mut estimation_variance = 0.0;
     for (i, bsv) in b.iter().enumerate() {
         estimation_variance += bsv * weights_vector[i];
@@ -208,14 +237,8 @@ pub fn empirical_semivariogram(samples: Vec<&Location>, nbins: usize, range: f64
     variogram_bins
 }
 
-pub fn render_variogram_text(
-    variogram_bins: &Vec<LagBin>,
-    model: &SphericalVariogramModel,
-) -> String {
-    let observed: Vec<(f64, f64)> = variogram_bins
-        .iter()
-        .map(|b| (b.h, b.sum / b.count as f64))
-        .collect();
+pub fn render_variogram_text<V: VariogramModel>(variogram_bins: &Vec<LagBin>, model: &V) -> String {
+    let observed: Vec<(f64, f64)> = variogram_bins.iter().map(|b| (b.h, b.mean())).collect();
 
     let modeled: Vec<(f64, f64)> = variogram_bins
         .iter()
@@ -235,7 +258,7 @@ pub fn render_variogram_text(
     Page::single(&v).dimensions(80, 30).to_text().unwrap()
 }
 
-pub fn fit_model(
+pub fn fit_spherical_model(
     variogram_bins: Vec<LagBin>,
     init_c1: f64,
     init_a: f64,
@@ -257,7 +280,7 @@ pub fn fit_model(
         let rss: Vec<f64> = variogram_bins
             .iter()
             .map(|bin| {
-                let actual = bin.sum / bin.count as f64;
+                let actual = bin.mean();
                 if actual.is_nan() {
                     0.
                 } else {
@@ -311,11 +334,87 @@ pub fn fit_model(
     model
 }
 
+pub fn fit_gaussian_model(
+    variogram_bins: Vec<LagBin>,
+    init_c1: f64,
+    init_a: f64,
+) -> GaussianVariogramModel {
+    // c0 = nugget
+    // c1 = sill
+    // a = range
+
+    // Our objective function to minimize
+    // Use clojure to capture the empirical variogram_bins
+    let objective_function = |params: ArrayView1<f64>| {
+        // Create model
+        let c0 = params[0];
+        let c1 = params[1];
+        let a = params[2];
+        let variogram = GaussianVariogramModel::new(c0, c1, a);
+
+        // Iterate through variogram bins and measure residual sum of squares
+        let rss: Vec<f64> = variogram_bins
+            .iter()
+            .map(|bin| {
+                let actual = bin.mean();
+                if actual.is_nan() {
+                    0.
+                } else {
+                    let estimated = variogram.estimate(bin.h);
+                    // not true sum of squares - we scale by the lag dist
+                    // to avoid the influence of outliers at high h
+                    ((actual - estimated) / bin.h).powf(2.0)
+                }
+            })
+            .collect();
+
+        // Root Mean Square Error
+        let n = rss.len();
+        let rmse = (rss.into_iter().sum::<f64>() / n as f64).sqrt();
+
+        if c0 < 0. {
+            // Penalize negatives to enforce the constraint
+            rmse * -200. * c0
+        } else {
+            rmse
+        }
+    };
+
+    // Set the starting guess
+    let args = Array::from_vec(vec![0.0, init_c1, init_a]);
+
+    // Run the optimization
+    let minimizer = NelderMeadBuilder::default()
+        .maxiter(80_000)
+        .maxfun(80_000)
+        .ftol(1000.)
+        .build()
+        .unwrap();
+    let params = minimizer.minimize(&objective_function, args.view());
+
+    // Create model
+    let c0 = params[0];
+    let c0 = {
+        if c0 < 0. {
+            0.
+        } else {
+            c0
+        }
+    };
+
+    let c1 = params[1];
+    let a = params[2];
+    let model = GaussianVariogramModel::new(c0, c1, a);
+    eprintln!("{}", render_variogram_text(&variogram_bins, &model));
+    eprintln!("{:?}", model);
+    model
+}
+
 pub fn estimated_sill(bins: &Vec<LagBin>) -> f64 {
     let mut maxval: f64 = NEG_INFINITY;
     let mut minval: f64 = INFINITY;
     for bin in bins.iter() {
-        let val = bin.sum / bin.count as f64;
+        let val = bin.mean();
         if val > maxval {
             maxval = val;
         }
