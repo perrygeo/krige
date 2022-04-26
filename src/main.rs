@@ -6,10 +6,11 @@ use std::io::Write;
 use clap::Parser;
 use kdtree::{distance::squared_euclidean, KdTree};
 use rand::{seq::IteratorRandom, thread_rng};
+use rayon::prelude::*;
 
 use rust_interpolate::{
     create_matrix_a, create_vector_b, empirical_semivariogram, estimated_sill, fit_gaussian_model,
-    fit_spherical_model, parse_locations, predict,
+    parse_locations, predict,
 };
 
 #[derive(Parser, Debug)]
@@ -27,7 +28,7 @@ struct Args {
     nbins: usize,
 
     /// Max Number of neighboring data points to consider
-    #[clap(short, long, default_value_t = 8)]
+    #[clap(short, long, default_value_t = 16)]
     max_neighbors: usize,
 
     /// Target width of the output raster
@@ -46,11 +47,6 @@ struct Args {
     /// Output the raster grid of standard deviations. Default <points>.stddev.grd
     #[clap(short, long)]
     stdev_grid: Option<String>,
-
-    /// Output the predicted points as GeoJSON feature collection. Default
-    /// <points>.prediction.geojson
-    #[clap(short, long)]
-    prediction_points: Option<String>,
 }
 
 fn adjust_extent(extent: &mut [f64], x: f64, y: f64) {
@@ -123,18 +119,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some(a) => a,
         None => String::from("/tmp/stddev.grd"),
     };
-    let prediction_points = match args.prediction_points {
-        Some(a) => a,
-        None => String::from("/tmp/predictions.geojson"),
-    };
 
-    eprintln!("prediction grid: {}", prediction_grid);
-    eprintln!("stdev grid: {}", stdev_grid);
-    eprintln!("prediction_points: {}", prediction_points);
+    eprintln!("Outputs:");
+    eprintln!("\tprediction grid: {}", prediction_grid);
+    eprintln!("\tstdev grid: {}", stdev_grid);
 
     let mut prediction_file = File::create(prediction_grid)?;
     let mut stdev_file = File::create(stdev_grid)?;
-    let mut points_file = File::create(prediction_points)?;
 
     // -------- Create empirical semivariogram from a sample
     eprintln!("Empirical semivariogram ...");
@@ -177,33 +168,29 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     for i in 0..rows {
         let y = ulorigin.1 - (i as f64 * cellsize) - halfcell;
-        let mut prediction_row = Vec::with_capacity(cols);
-        let mut stdev_row = Vec::with_capacity(cols);
-        for j in 0..cols {
-            let x = ulorigin.0 + (j as f64 * cellsize) + halfcell;
-            let pt = (x, y);
+        let row: Vec<(f64, f64)> = (0..cols)
+            .into_par_iter()
+            .map(|j| {
+                let x = ulorigin.0 + (j as f64 * cellsize) + halfcell;
+                let pt = (x, y);
 
-            // Identify nearby data points
-            let neighbors =
-                kdtree.nearest(&[pt.0, pt.1], args.max_neighbors, &squared_euclidean)?;
+                // Identify nearby data points
+                let neighbors = kdtree
+                    .nearest(&[pt.0, pt.1], args.max_neighbors, &squared_euclidean)
+                    .unwrap();
 
-            // Perform kriging
-            let a = create_matrix_a(&neighbors, &model);
-            let b = create_vector_b(pt, &neighbors, &model);
-            let a_inv = a.try_inverse().unwrap();
-            let (predicted_value, estimation_variance) = predict(&a_inv, &b, &neighbors);
-            prediction_row.push(predicted_value);
-            stdev_row.push(estimation_variance.sqrt());
+                // Perform kriging
+                let a = create_matrix_a(&neighbors, &model);
+                let b = create_vector_b(pt, &neighbors, &model);
+                let a_inv = a.try_inverse().unwrap();
+                let (predicted_value, estimation_variance) = predict(&a_inv, &b, &neighbors);
 
-            let geojson = format!(
-                r#"{{"type":"Feature","geometry":{{"type":"Point","coordinates":[{},{}]}},"properties":{{"value":{},"stdev":{}}}}}"#,
-                pt.0,
-                pt.1,
-                predicted_value,
-                estimation_variance.sqrt(),
-            );
-            writeln!(&mut points_file, "{}", geojson)?;
-        }
+                (predicted_value, estimation_variance.sqrt())
+            })
+            .collect();
+
+        // Write to ascii grids
+        let (prediction_row, stdev_row): (Vec<_>, Vec<_>) = row.into_iter().unzip();
         writeln!(&mut prediction_file, "{}", prediction_row.iter().join(" "))?;
         writeln!(&mut stdev_file, "{}", stdev_row.iter().join(" "))?;
     }
