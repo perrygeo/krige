@@ -104,7 +104,14 @@ impl GaussianVariogramModel {
 impl VariogramModel for GaussianVariogramModel {
     fn estimate(&self, lag: f64) -> f64 {
         let h = lag.abs();
-        self.c0 + self.c1 * (1. - E.powf(-1. * (h.powf(2.) / self.a.powf(2.))))
+
+        if h == 0.0 {
+            // Lag of zero implies exact same point, use the nugget
+            self.c0
+        } else {
+            // Lag is within range, calculate
+            self.c0 + self.c1 * (1. - E.powf((-1. * h).powf(2.) / self.a.powf(2.)))
+        }
     }
 }
 
