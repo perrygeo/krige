@@ -9,8 +9,8 @@ use rand::{seq::IteratorRandom, thread_rng};
 use rayon::prelude::*;
 
 use rust_interpolate::{
-    create_matrix_a, create_vector_b, empirical_semivariogram, estimated_sill, fit_gaussian_model,
-    fit_spherical_model, parse_locations, predict,
+    adjust_extent, create_matrix_a, create_vector_b, empirical_semivariogram, estimated_range,
+    estimated_sill, fit_gaussian_model, fit_spherical_model, parse_locations, predict,
 };
 
 #[derive(Parser, Debug)]
@@ -47,26 +47,6 @@ struct Args {
     /// Output the raster grid of standard deviations. Default <points>.stddev.grd
     #[clap(short, long)]
     stdev_grid: Option<String>,
-}
-
-fn adjust_extent(extent: &mut [f64], x: f64, y: f64) {
-    if x < extent[0] {
-        extent[0] = x;
-    } else if x > extent[2] {
-        extent[2] = x;
-    }
-
-    if y < extent[1] {
-        extent[1] = y;
-    } else if y > extent[3] {
-        extent[3] = y;
-    }
-}
-
-fn estimated_range(extent: &[f64; 4]) -> f64 {
-    let width = extent[2] - extent[0];
-    let height = extent[3] - extent[1];
-    (height + width) / 1.5
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -132,9 +112,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let samples = locs.iter().choose_multiple(&mut rng, args.samples);
     let variogram_bins = empirical_semivariogram(samples, args.nbins, range);
     let init_sill = estimated_sill(&variogram_bins);
+
     let model = fit_spherical_model(&variogram_bins, init_sill, range);
-    // TODO guassian model still buggy
-    let _model = fit_gaussian_model(&variogram_bins, init_sill, range);
+    // TODO
+    // let model = fit_gaussian_model(&variogram_bins, init_sill, range);
 
     // -------- Prediction
     // estimate cellsize such that each row is roughly x columns wide to cover the extent

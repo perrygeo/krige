@@ -74,8 +74,8 @@ impl VariogramModel for SphericalVariogramModel {
         let h = lag.abs();
 
         if h == 0.0 {
-            // Lag of zero implies exact same point, use the nugget
-            self.c0
+            // Lag of zero implies exact same point, use zero
+            0.
         } else if h > self.a {
             // Lag greater than range, use the nugget + sill
             self.c0 + self.c1
@@ -106,11 +106,12 @@ impl VariogramModel for GaussianVariogramModel {
         let h = lag.abs();
 
         if h == 0.0 {
-            // Lag of zero implies exact same point, use the nugget
-            self.c0
+            // Lag of zero implies exact same point, use zero
+            0.
         } else {
-            // Lag is within range, calculate
-            self.c0 + self.c1 * (1. - E.powf(-1. * h.powf(2.) / self.a.powf(2.)))
+            // use 4/7 range per
+            // https://geostat-framework.readthedocs.io/projects/pykrige/en/stable/variogram_models.html
+            self.c0 + self.c1 * (1. - E.powf(-1. * h.powf(2.) / (self.a * 4. / 7.).powf(2.)))
         }
     }
 }
@@ -121,6 +122,26 @@ pub fn calculate_variance(si: &Location, sj: &Location) -> f64 {
 
 pub fn distance(a: &Location, b: &Location) -> f64 {
     (((a.x - b.x).powf(2.0)) + ((a.y - b.y).powf(2.0))).sqrt()
+}
+
+pub fn adjust_extent(extent: &mut [f64], x: f64, y: f64) {
+    if x < extent[0] {
+        extent[0] = x;
+    } else if x > extent[2] {
+        extent[2] = x;
+    }
+
+    if y < extent[1] {
+        extent[1] = y;
+    } else if y > extent[3] {
+        extent[3] = y;
+    }
+}
+
+pub fn estimated_range(extent: &[f64; 4]) -> f64 {
+    let width = extent[2] - extent[0];
+    let height = extent[3] - extent[1];
+    (height + width) / 1.5
 }
 
 pub fn parse_locations(file: File) -> Result<Vec<Location>, Box<dyn Error>> {
@@ -197,17 +218,15 @@ pub fn predict(
 
     // predict the unknown value at pt using sum(weight * observed_z)
     let mut predicted_value = 0.0;
+    let mut estimation_variance = 0.0;
+
     for (i, (_, s)) in neighbors.iter().enumerate() {
-        predicted_value += s.z * weights_vector[i];
+        predicted_value += weights_vector[i] * s.z;
+        estimation_variance += weights_vector[i] * b[i];
     }
 
-    // estimate the kriging variance at a point
-    // error in z units is the stddev (the sqrt of variance)
-    // TODO should be possible to do in matrix methods: let estvar = (b2 * weights_vector).sum();
-    let mut estimation_variance = 0.0;
-    for (i, bsv) in b.iter().enumerate() {
-        estimation_variance += bsv * weights_vector[i];
-    }
+    // Add theta term
+    estimation_variance += weights_vector[neighbors.len()];
 
     (predicted_value, estimation_variance)
 }
@@ -434,9 +453,36 @@ pub fn estimated_sill(bins: &Vec<LagBin>) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use crate::GaussianVariogramModel;
+    use crate::SphericalVariogramModel;
+    use crate::VariogramModel;
+
+    fn approx_equal(a: f64, b: f64) -> bool {
+        let decimal_places = 6;
+        let factor = 10.0f64.powi(decimal_places);
+        let a = (a * factor).trunc();
+        let b = (b * factor).trunc();
+        a == b
+    }
+
     #[test]
-    fn it_works() {
-        let result = 2 + 2;
-        assert_eq!(result, 4);
+    fn spherical_model_estimation() {
+        let m = SphericalVariogramModel::new(0., 10., 100.);
+        assert_eq!(m.estimate(1.), m.estimate(-1.));
+        assert!(approx_equal(m.estimate(0.), 0.));
+        assert!(approx_equal(m.estimate(50.), 6.875));
+        assert!(approx_equal(m.estimate(100.), 10.));
+        assert!(approx_equal(m.estimate(200.), 10.));
+    }
+
+    #[test]
+    fn gaussian_model_estimation() {
+        let m = GaussianVariogramModel::new(0., 10., 100.);
+        assert_eq!(m.estimate(1.), m.estimate(-1.));
+        assert!(approx_equal(m.estimate(0.), 0.));
+        assert!(approx_equal(m.estimate(50.), 5.34956811));
+        assert!(approx_equal(m.estimate(100.), 9.53229377));
+        assert!(approx_equal(m.estimate(200.), 9.99995214));
+        assert!(approx_equal(m.estimate(800.), 10.));
     }
 }
