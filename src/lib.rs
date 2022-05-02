@@ -110,7 +110,7 @@ impl VariogramModel for GaussianVariogramModel {
             self.c0
         } else {
             // Lag is within range, calculate
-            self.c0 + self.c1 * (1. - E.powf((-1. * h).powf(2.) / self.a.powf(2.)))
+            self.c0 + self.c1 * (1. - E.powf(-1. * h.powf(2.) / self.a.powf(2.)))
         }
     }
 }
@@ -266,7 +266,7 @@ pub fn render_variogram_text<V: VariogramModel>(variogram_bins: &Vec<LagBin>, mo
 }
 
 pub fn fit_spherical_model(
-    variogram_bins: Vec<LagBin>,
+    variogram_bins: &Vec<LagBin>,
     init_c1: f64,
     init_a: f64,
 ) -> SphericalVariogramModel {
@@ -342,7 +342,7 @@ pub fn fit_spherical_model(
 }
 
 pub fn fit_gaussian_model(
-    variogram_bins: Vec<LagBin>,
+    variogram_bins: &Vec<LagBin>,
     init_c1: f64,
     init_a: f64,
 ) -> GaussianVariogramModel {

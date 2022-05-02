@@ -132,9 +132,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let samples = locs.iter().choose_multiple(&mut rng, args.samples);
     let variogram_bins = empirical_semivariogram(samples, args.nbins, range);
     let init_sill = estimated_sill(&variogram_bins);
-    let model = fit_spherical_model(variogram_bins, init_sill, range);
-    // TODO
-    // let model = fit_gaussian_model(variogram_bins, init_sill, range);
+    let model = fit_spherical_model(&variogram_bins, init_sill, range);
+    // TODO guassian model still buggy
+    let _model = fit_gaussian_model(&variogram_bins, init_sill, range);
 
     // -------- Prediction
     // estimate cellsize such that each row is roughly x columns wide to cover the extent
