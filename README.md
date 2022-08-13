@@ -74,15 +74,17 @@ Band 1 Block=256x1 Type=Float32, ColorInterp=Undefined
 
 This is a side project so I'm not likely to get around to this anytime soon. I welcome ideas and contributions though!
 
-- [] Fit the model automatically, see [scipy](https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.curve_fit.html#scipy-optimize-curve-fit)
-- [] Support other models: Exponential, Linear, Gaussian, see [scikit-gstat](https://mmaelicke.github.io/scikit-gstat/reference/models.html)
-- [] Cross-validation, MSPE on a subset of the original (removed prior to constructing empirical semivariogram)
-- [] Parallel processing
-- [] Python wrapper
-- [] Refactor API and write unit tests
-- [] Other distance metrics: geodesic distance, great circle distance, ECEF 3D distance
-- [] Co-kriging
-- [] Trend elimination (ie Universal Kriging)
-- [] Subsetting and combining overlapping variogram models
-- [] Anisotropy
-- [] Bayesian estimation
+- [ ] Fit the model automatically, see [scipy](https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.curve_fit.html#scipy-optimize-curve-fit)
+- [ ] Support other models: Exponential, Linear, Gaussian, see [scikit-gstat](https://mmaelicke.github.io/scikit-gstat/reference/models.html)
+- [ ] Cross-validation, MSPE on a subset of the original (removed prior to constructing empirical semivariogram)
+- [ ] Parallel processing
+- [ ] Python wrapper
+- [ ] Refactor API and write unit tests
+- [ ] Other distance metrics: geodesic distance, great circle distance, ECEF 3D distance
+- [ ] Co-kriging
+- [ ] Trend elimination (ie Universal Kriging)
+- [ ] Subsetting and combining overlapping variogram models
+- [ ] Anisotropy
+- [ ] Bayesian estimation
+
+For a more complete implementation in Rust, check out the GeoStat framework's [GSTools-Core](https://github.com/GeoStat-Framework/GSTools-Core).
