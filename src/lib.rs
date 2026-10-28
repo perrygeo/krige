@@ -1,6 +1,5 @@
 use std::error::Error;
 use std::f64::consts::E;
-use std::f64::{INFINITY, NEG_INFINITY};
 use std::fs::File;
 
 use itertools::Itertools;
@@ -10,11 +9,6 @@ use plotlib::page::Page;
 use plotlib::repr::Plot;
 use plotlib::style::{PointMarker, PointStyle};
 use plotlib::view::ContinuousView;
-
-use ndarray::prelude::*;
-
-use optimize::Minimizer;
-use optimize::NelderMeadBuilder;
 
 /// XYZ Locations
 #[derive(Debug, serde::Deserialize)]
@@ -111,7 +105,7 @@ impl VariogramModel for GaussianVariogramModel {
         } else {
             // use 4/7 range per
             // https://geostat-framework.readthedocs.io/projects/pykrige/en/stable/variogram_models.html
-            self.c0 + self.c1 * (1. - E.powf(-1. * h.powf(2.) / (self.a * 4. / 7.).powf(2.)))
+            self.c0 + self.c1 * (1. - E.powf(-h.powf(2.) / (self.a * 4. / 7.).powf(2.)))
         }
     }
 }
@@ -168,7 +162,7 @@ pub fn create_matrix_a<V: VariogramModel>(
     let mut matrix_values = Vec::with_capacity((num_neighbors + 1).pow(2));
     for (_, si) in neighbors.iter() {
         for (_, sj) in neighbors.iter() {
-            let dist = distance(&si, &sj);
+            let dist = distance(si, sj);
             let modeled_semivariance = model.estimate(dist);
             matrix_values.push(modeled_semivariance);
         }
@@ -197,7 +191,7 @@ pub fn create_vector_b<V: VariogramModel>(
         z: 0.0,
     };
     for (_, s) in neighbors.iter() {
-        let dist = distance(&s, &unknown);
+        let dist = distance(s, &unknown);
         // plug in distances to the variogram estimator to create vector b
         let modeled_semivariance = model.estimate(dist);
         vector_values.push(modeled_semivariance);
@@ -247,12 +241,12 @@ pub fn empirical_semivariogram(samples: Vec<&Location>, nbins: usize, range: f64
         let si = pair[0];
         let sj = pair[1];
 
-        let dist = distance(&si, &sj);
+        let dist = distance(si, sj);
         if dist == 0.0 || dist > range {
             continue;
         }
 
-        let variance = calculate_variance(&si, &sj);
+        let variance = calculate_variance(si, sj);
 
         // should always be 0 to args.nbins
         let lagbin_idx = (nbins as f64 * (dist / range)) as usize;
@@ -284,6 +278,177 @@ pub fn render_variogram_text<V: VariogramModel>(variogram_bins: &Vec<LagBin>, mo
     Page::single(&v).dimensions(80, 30).to_text().unwrap()
 }
 
+fn order_simplex(sim: &mut [Vec<f64>], fsim: &mut [f64]) {
+    let mut order: Vec<usize> = (0..fsim.len()).collect();
+    order.sort_by(|&a, &b| {
+        fsim[a]
+            .partial_cmp(&fsim[b])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let sorted_sim: Vec<Vec<f64>> = order.iter().map(|&i| sim[i].clone()).collect();
+    let sorted_fsim: Vec<f64> = order.iter().map(|&i| fsim[i]).collect();
+    sim.clone_from_slice(&sorted_sim);
+    fsim.clone_from_slice(&sorted_fsim);
+}
+
+/// Nelder-Mead simplex minimization (ported from the `optimize` crate to drop
+/// its ndarray 0.11 dependency). Minimizes `func` starting from `x0`.
+fn nelder_mead<F>(
+    func: F,
+    x0: &[f64],
+    maxiter: usize,
+    maxfun: usize,
+    xtol: f64,
+    ftol: f64,
+) -> Vec<f64>
+where
+    F: Fn(&[f64]) -> f64,
+{
+    let n = x0.len();
+    let rho = 1.0f64;
+    let chi = 2.0f64;
+    let psi = 0.5f64;
+    let sigma = 0.5f64;
+
+    let nonzdelt = 0.05f64;
+    let zdelt = 0.00025f64;
+
+    // Build the initial simplex (x0 plus one perturbed point per dimension).
+    let mut sim: Vec<Vec<f64>> = Vec::with_capacity(n + 1);
+    let mut fsim: Vec<f64> = Vec::with_capacity(n + 1);
+    let mut num_calls = 0usize;
+
+    sim.push(x0.to_vec());
+    fsim.push(func(x0));
+    num_calls += 1;
+    for k in 0..n {
+        let mut y = x0.to_vec();
+        y[k] = if y[k] == 0.0 {
+            zdelt
+        } else {
+            (1.0 + nonzdelt) * y[k]
+        };
+        fsim.push(func(&y));
+        num_calls += 1;
+        sim.push(y);
+    }
+
+    order_simplex(&mut sim, &mut fsim);
+
+    let mut iterations = 1usize;
+
+    loop {
+        if maxiter <= iterations || maxfun <= num_calls {
+            break;
+        }
+
+        // xtol: max absolute deviation from best point in parameter space.
+        let mut max_diff = 0.0f64;
+        for j in 1..=n {
+            for k in 0..n {
+                let d = (sim[j][k] - sim[0][k]).abs();
+                if d > max_diff {
+                    max_diff = d;
+                }
+            }
+        }
+        if max_diff < xtol {
+            break;
+        }
+
+        // ftol: max absolute deviation from best function value.
+        let mut max_fdiff = 0.0f64;
+        for j in 1..=n {
+            let d = (fsim[j] - fsim[0]).abs();
+            if d > max_fdiff {
+                max_fdiff = d;
+            }
+        }
+        if max_fdiff < ftol {
+            break;
+        }
+
+        // Centroid of all points except the worst.
+        let xbar: Vec<f64> = (0..n)
+            .map(|k| sim[..n].iter().map(|p| p[k]).sum::<f64>() / n as f64)
+            .collect();
+
+        // Reflection.
+        let xr: Vec<f64> = (0..n)
+            .map(|k| xbar[k] * (rho + 1.0) - sim[n][k] * rho)
+            .collect();
+        let fxr = func(&xr);
+        num_calls += 1;
+
+        let mut doshrink = false;
+
+        if fxr < fsim[0] {
+            // Expansion.
+            let xe: Vec<f64> = (0..n)
+                .map(|k| (1.0 + rho * chi) * xbar[k] - rho * chi * sim[n][k])
+                .collect();
+            let fxe = func(&xe);
+            num_calls += 1;
+
+            if fxe < fxr {
+                sim[n] = xe;
+                fsim[n] = fxe;
+            } else {
+                sim[n] = xr;
+                fsim[n] = fxr;
+            }
+        } else if fxr < fsim[n - 1] {
+            sim[n] = xr;
+            fsim[n] = fxr;
+        } else if fxr < fsim[n] {
+            // Outside contraction.
+            let xc: Vec<f64> = (0..n)
+                .map(|k| (1.0 + psi * rho) * xbar[k] - psi * rho * sim[n][k])
+                .collect();
+            let fxc = func(&xc);
+            num_calls += 1;
+
+            if fxc > fxr {
+                doshrink = true;
+            } else {
+                sim[n] = xc;
+                fsim[n] = fxc;
+            }
+        } else {
+            // Inside contraction.
+            let xcc: Vec<f64> = (0..n)
+                .map(|k| (1.0 - psi) * xbar[k] + psi * sim[n][k])
+                .collect();
+            let fxcc = func(&xcc);
+            num_calls += 1;
+
+            if fxcc < fsim[n] {
+                sim[n] = xcc;
+                fsim[n] = fxcc;
+            } else {
+                doshrink = true;
+            }
+        }
+
+        if doshrink {
+            for j in 1..=n {
+                let mut tmp: Vec<f64> = (0..n).map(|k| sim[j][k] - sim[0][k]).collect();
+                for k in 0..n {
+                    tmp[k] = tmp[k] * sigma + sim[0][k];
+                }
+                sim[j] = tmp.clone();
+                fsim[j] = func(&tmp);
+                num_calls += 1;
+            }
+        }
+
+        order_simplex(&mut sim, &mut fsim);
+        iterations += 1;
+    }
+
+    sim[0].clone()
+}
+
 pub fn fit_spherical_model(
     variogram_bins: &Vec<LagBin>,
     init_c1: f64,
@@ -295,7 +460,7 @@ pub fn fit_spherical_model(
 
     // Our objective function to minimize
     // Use clojure to capture the empirical variogram_bins
-    let objective_function = |params: ArrayView1<f64>| {
+    let objective_function = |params: &[f64]| {
         // Create model
         let c0 = params[0];
         let c1 = params[1];
@@ -330,17 +495,15 @@ pub fn fit_spherical_model(
         }
     };
 
-    // Set the starting guess
-    let args = Array::from_vec(vec![0.0, init_c1, init_a]);
-
     // Run the optimization
-    let minimizer = NelderMeadBuilder::default()
-        .maxiter(80_000)
-        .maxfun(80_000)
-        .ftol(1000.)
-        .build()
-        .unwrap();
-    let params = minimizer.minimize(&objective_function, args.view());
+    let params = nelder_mead(
+        objective_function,
+        &[0.0, init_c1, init_a],
+        80_000,
+        80_000,
+        1e-4,
+        1000.,
+    );
 
     // Create model
     let c0 = params[0];
@@ -355,7 +518,7 @@ pub fn fit_spherical_model(
     let c1 = params[1];
     let a = params[2];
     let model = SphericalVariogramModel::new(c0, c1, a);
-    eprintln!("{}", render_variogram_text(&variogram_bins, &model));
+    eprintln!("{}", render_variogram_text(variogram_bins, &model));
     eprintln!("{:?}", model);
     model
 }
@@ -371,7 +534,7 @@ pub fn fit_gaussian_model(
 
     // Our objective function to minimize
     // Use clojure to capture the empirical variogram_bins
-    let objective_function = |params: ArrayView1<f64>| {
+    let objective_function = |params: &[f64]| {
         // Create model
         let c0 = params[0];
         let c1 = params[1];
@@ -406,17 +569,15 @@ pub fn fit_gaussian_model(
         }
     };
 
-    // Set the starting guess
-    let args = Array::from_vec(vec![0.0, init_c1, init_a]);
-
     // Run the optimization
-    let minimizer = NelderMeadBuilder::default()
-        .maxiter(80_000)
-        .maxfun(80_000)
-        .ftol(1000.)
-        .build()
-        .unwrap();
-    let params = minimizer.minimize(&objective_function, args.view());
+    let params = nelder_mead(
+        objective_function,
+        &[0.0, init_c1, init_a],
+        80_000,
+        80_000,
+        1e-4,
+        1000.,
+    );
 
     // Create model
     let c0 = params[0];
@@ -431,14 +592,14 @@ pub fn fit_gaussian_model(
     let c1 = params[1];
     let a = params[2];
     let model = GaussianVariogramModel::new(c0, c1, a);
-    eprintln!("{}", render_variogram_text(&variogram_bins, &model));
+    eprintln!("{}", render_variogram_text(variogram_bins, &model));
     eprintln!("{:?}", model);
     model
 }
 
 pub fn estimated_sill(bins: &Vec<LagBin>) -> f64 {
-    let mut maxval: f64 = NEG_INFINITY;
-    let mut minval: f64 = INFINITY;
+    let mut maxval: f64 = f64::NEG_INFINITY;
+    let mut minval: f64 = f64::INFINITY;
     for bin in bins.iter() {
         let val = bin.mean();
         if val > maxval {

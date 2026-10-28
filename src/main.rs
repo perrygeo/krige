@@ -5,12 +5,12 @@ use std::io::Write;
 
 use clap::Parser;
 use kdtree::{distance::squared_euclidean, KdTree};
-use rand::{seq::IteratorRandom, thread_rng};
+use rand::seq::IteratorRandom;
 use rayon::prelude::*;
 
 use rust_interpolate::{
     adjust_extent, create_matrix_a, create_vector_b, empirical_semivariogram, estimated_range,
-    estimated_sill, fit_gaussian_model, fit_spherical_model, parse_locations, predict,
+    estimated_sill, fit_spherical_model, parse_locations, predict,
 };
 
 #[derive(Parser, Debug)]
@@ -51,7 +51,7 @@ struct Args {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
-    let mut rng = thread_rng();
+    let mut rng = rand::rng();
 
     // Parse XYZ Locations from input text
     eprintln!("Parse XYZ file...");
@@ -73,7 +73,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     for loc in locs.iter() {
         // If existing points, check to avoid dups, there must be a better way!
         let nns = kdtree.nearest(&[loc.x, loc.y], 1, &squared_euclidean)?;
-        if nns.len() > 0 {
+        if !nns.is_empty() {
             let (sqdist, _existing) = nns[0];
             if sqdist < EPSILON {
                 // Duplicate point exists, skip
@@ -109,7 +109,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // -------- Create empirical semivariogram from a sample
     eprintln!("Empirical semivariogram ...");
-    let samples = locs.iter().choose_multiple(&mut rng, args.samples);
+    let samples = locs.iter().sample(&mut rng, args.samples);
     let variogram_bins = empirical_semivariogram(samples, args.nbins, range);
     let init_sill = estimated_sill(&variogram_bins);
 
