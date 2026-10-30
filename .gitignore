@@ -1,2 +1,4 @@
 /target
-Cargo.lock
+/result
+*.prediction.tif
+*.stddev.tif
