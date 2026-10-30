@@ -8,8 +8,9 @@ authors = ["Matthew Perry"]
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
-csv = "1.1"
-serde = { version = "1", features = ["derive"] }
+# GDAL 3.13 support lives on georust/gdal master (unreleased); pin the commit
+# so the build stays reproducible and matches the pinned nixpkgs GDAL 3.13.3.
+gdal = { git = "https://github.com/georust/gdal", rev = "c0a6266b987a2c2d44aea9956c2cae1ed71445cf" }
 rand = { version = "0.10.3" }
 itertools = { version = "0.15.0" }
 nalgebra = { version = "0.35.0" }

@@ -4,14 +4,13 @@ A learning project to implement geospatial interpolation using [ordinary kriging
 
 Specifically my goals are:
 
-- Parse a file of XYZ points representing observations
+- Read point observations from any GDAL-readable vector source (GeoPackage, Shapefile, FlatGeobuf, GeoJSON, CSV/XYZ text, …)
 - Create a spatial index of the observations
 - Create an empirical semivariogram from a sample of the input observations
 - Create a mathematical model of the empirical semivariogram
 - Estimate a raster grid covering the data extent
   - For every unknown point in the grid, use the model to predict the value and variance
-- Write the predicted grid to a raster or vector file format.
-  - For now, stick to simple human readable text formats.
+- Write the predicted grid and the standard deviation grid as GeoTIFF rasters via GDAL
 
 ## Kriging
 
@@ -19,54 +18,59 @@ Kriging is a geostatistical technique for predicting the value of a spatial phen
 
 _Principles of Geographical Information Systems_ by Burrough and McDonnel (1998) was my primary source of inspiration and the gory mathematical details, particularly Chapters 5 and 6.
 
-## Build
+## Build (reproducible, via Nix)
+
+The project builds reproducibly with [Nix](https://nixos.org/) flakes and [crane](https://crane.dev/). All inputs are pinned — `nixpkgs`, `crane`, `flake-utils`, and the `gdal` crate commit — and both `Cargo.lock` and `flake.lock` are committed.
 
 ```
-cargo build --release
+nix build            # build the release binary
+nix run . -- --help  # run the CLI
+nix develop          # dev shell with cargo, clippy, rustfmt, and GDAL tools
+nix flake check      # run the test suite
 ```
+
+The build links against the system GDAL from the pinned `nixpkgs`; no GDAL source is compiled.
+
+## Usage
+
+```
+nix run . -- <input> [OPTIONS]
+```
+
+- `<input>` — any GDAL-readable point dataset.
+  - `.gpkg`, `.shp`, `.fgb`, `.geojson`, … are opened by their native drivers.
+  - Plain-text `.xyz` / `.txt` / `.tsv` / `.psv` / `.csv` files are read through the GDAL CSV driver (tab-separated for `.xyz`/`.txt`/`.tsv`, comma for `.csv`/`.psv`). Common X/Y/Z column names (`x`, `lon`, `longitude`, `field_1`, …) are mapped automatically.
+- `--field <name>` — attribute field holding the observed value (default `z`). For 3D points or XYZ text, the geometry Z coordinate is used as a fallback.
+- `--layer <name>` — vector layer name (defaults to the first layer).
+- `-s, --samples`, `-n, --nbins`, `-m, --max-neighbors`, `-w, --target-width`, `-r, --range` — kriging parameters (see `--help`).
+- `--prediction-grid`, `--stdev-grid` — output GeoTIFF paths (default `<input>.prediction.tif` / `<input>.stddev.tif`).
 
 ## Test
 
-Input: a text file with X, Y and Z values, tab-delimited. (see `test.xyz`)
+Input: `test.xyz`, a tab-delimited `X Y Z` text file with 200 points.
 
 <img src="img/pts.png" height="400px">
 
+```
+nix run . -- test.xyz
+```
+
 Outputs:
 
-1. Prediction grid in [ArcInfo ASCII Grid format](https://www.loc.gov/preservation/digital/formats/fdd/fdd000421.shtml)
-2. Standard deviation grid in [ArcInfo ASCII Grid format](https://www.loc.gov/preservation/digital/formats/fdd/fdd000421.shtml)
-3. Prediction points as geojson features (contains both predicted value and standard deviation as properties)
+1. `test.prediction.tif` — predicted value grid (Float64 GeoTIFF)
+2. `test.stddev.tif` — standard deviation grid (Float64 GeoTIFF)
 
 <img src="img/grid.png" height="400px">
 
 ```
-time ./target/release/rust-interpolate test2.xyz
-```
-
-The stderr logs
-
-```
-Parse XYZ file...
-Create spatial index and removing dups...
-extent [-125.0029566667, 41.481515, -124.66719, 42.0182683333]
-Empirical semivariogram ...
-Making predictions on grid... 256 x 410 with cellsize 0.0013115885417968598
-./target/release/rust-interpolate --points test.xyz --range 0.2 >   20.67s user 0.00s system 99% cpu 20.673 total
-
-➥ gdalinfo /tmp/estimates.grd -mm
-Driver: AAIGrid/Arc/Info ASCII Grid
-Files: /tmp/estimates.grd
+➥ gdalinfo test.prediction.tif -mm
+Driver: GTiff/GeoTIFF
+Files: test.prediction.tif
 Size is 256, 410
 Origin = (-125.002956666700001,42.018268333300000)
 Pixel Size = (0.001311588541797,-0.001311588541797)
-Corner Coordinates:
-Upper Left  (-125.0029567,  42.0182683)
-Lower Left  (-125.0029567,  41.4805170)
-Upper Right (-124.6671900,  42.0182683)
-Lower Right (-124.6671900,  41.4805170)
-Center      (-124.8350733,  41.7493927)
-Band 1 Block=256x1 Type=Float32, ColorInterp=Undefined
-    Computed Min/Max=-1124.295,-556.319
+Band 1 Block=256x4 Type=Float64, ColorInterp=Gray
+    Computed Min/Max=-1124.534,-556.183
   NoData Value=-9999
 ```
 
@@ -77,9 +81,8 @@ This is a side project so I'm not likely to get around to this anytime soon. I w
 - [ ] Fit the model automatically, see [scipy](https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.curve_fit.html#scipy-optimize-curve-fit)
 - [ ] Support other models: Exponential, Linear, Gaussian, see [scikit-gstat](https://mmaelicke.github.io/scikit-gstat/reference/models.html)
 - [ ] Cross-validation, MSPE on a subset of the original (removed prior to constructing empirical semivariogram)
-- [ ] Parallel processing
 - [ ] Python wrapper
-- [ ] Refactor API and write unit tests
+- [ ] Refactor API and write more unit tests
 - [ ] Other distance metrics: geodesic distance, great circle distance, ECEF 3D distance
 - [ ] Co-kriging
 - [ ] Trend elimination (ie Universal Kriging)
