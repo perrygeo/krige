@@ -49,6 +49,10 @@ impl LagBin {
     pub fn mean(&self) -> f64 {
         self.sum / (self.count as f64)
     }
+
+    pub fn count(&self) -> usize {
+        self.count
+    }
 }
 
 pub trait VariogramModel {
@@ -611,74 +615,98 @@ where
     sim[0].clone()
 }
 
+/// Weighted root-mean-square error of a variogram model against the empirical
+/// lag bins. Each bin is weighted by the number of pairs it contains (the
+/// standard WLS weight for empirical semivariograms: the variance of a bin mean
+/// scales as 1/count).
+fn weighted_rmse<V: VariogramModel>(variogram_bins: &[LagBin], model: &V) -> f64 {
+    let mut weighted_rss = 0.0;
+    let mut total_weight = 0.0;
+    for bin in variogram_bins.iter() {
+        let actual = bin.mean();
+        if actual.is_nan() {
+            continue;
+        }
+        let estimated = model.estimate(bin.h);
+        let weight = bin.count as f64;
+        weighted_rss += weight * (actual - estimated).powf(2.0);
+        total_weight += weight;
+    }
+    if total_weight == 0.0 {
+        return 0.0;
+    }
+    (weighted_rss / total_weight).sqrt()
+}
+
+/// Estimate the nugget (semivariance at zero lag) from the closest lag bins.
+/// Used as the starting value for c0; starting at zero biases the optimizer
+/// toward a zero nugget.
+pub fn estimated_nugget(bins: &[LagBin]) -> f64 {
+    let mut sum = 0.0;
+    let mut count = 0usize;
+    for bin in bins.iter().take(8) {
+        let mean = bin.mean();
+        if !mean.is_nan() {
+            sum += mean;
+            count += 1;
+        }
+    }
+    if count == 0 {
+        0.0
+    } else {
+        sum / count as f64
+    }
+}
+
 pub fn fit_spherical_model(
     variogram_bins: &Vec<LagBin>,
     init_c1: f64,
     init_a: f64,
 ) -> SphericalVariogramModel {
     // c0 = nugget
-    // c1 = sill
+    // c1 = partial sill
     // a = range
 
-    // Our objective function to minimize
-    // Use closure to capture the empirical variogram_bins
+    // Weighted least-squares objective. Parameters are kept in physically
+    // meaningful ranges with one-sided barriers that leave the objective
+    // unchanged for valid values.
     let objective_function = |params: &[f64]| {
-        // Create model
         let c0 = params[0];
         let c1 = params[1];
         let a = params[2];
         let variogram = SphericalVariogramModel::new(c0, c1, a);
 
-        // Iterate through variogram bins and measure residual sum of squares
-        let rss: Vec<f64> = variogram_bins
-            .iter()
-            .map(|bin| {
-                let actual = bin.mean();
-                if actual.is_nan() {
-                    0.
-                } else {
-                    let estimated = variogram.estimate(bin.h);
-                    // not true sum of squares - we scale by the lag dist
-                    // to avoid the influence of outliers at high h
-                    ((actual - estimated) / bin.h).powf(2.0)
-                }
-            })
-            .collect();
-
-        // Root Mean Square Error
-        let n = rss.len();
-        let rmse = (rss.into_iter().sum::<f64>() / n as f64).sqrt();
-
+        let mut objective = weighted_rmse(variogram_bins, &variogram);
         if c0 < 0. {
-            // Penalize negatives to enforce the constraint
-            rmse * -200. * c0
-        } else {
-            rmse
+            objective *= 1.0 + 200.0 * c0.abs();
         }
+        if c1 < 0. {
+            objective *= 1.0 + 200.0 * c1.abs();
+        }
+        if a <= 0. {
+            objective *= 1.0 + 200.0 * a.abs();
+        }
+        objective
     };
+
+    // Start the nugget at the empirical intercept rather than zero; a zero
+    // start biases the simplex toward a zero nugget.
+    let init_c0 = estimated_nugget(variogram_bins);
 
     // Run the optimization
     let params = nelder_mead(
         objective_function,
-        &[0.0, init_c1, init_a],
+        &[init_c0, (init_c1 - init_c0).max(0.0), init_a],
         80_000,
         80_000,
-        1e-4,
-        1000.,
+        1e-6,
+        1e-8,
     );
 
-    // Create model
-    let c0 = params[0];
-    let c0 = {
-        if c0 < 0. {
-            0.
-        } else {
-            c0
-        }
-    };
-
-    let c1 = params[1];
-    let a = params[2];
+    // Create model (the barriers keep these valid, but clamp as a safety net)
+    let c0 = params[0].max(0.0);
+    let c1 = params[1].max(0.0);
+    let a = params[2].max(1e-6);
     let model = SphericalVariogramModel::new(c0, c1, a);
     eprintln!("{}", render_variogram_text(variogram_bins, &model));
     eprintln!("{:?}", model);
@@ -691,68 +719,49 @@ pub fn fit_gaussian_model(
     init_a: f64,
 ) -> GaussianVariogramModel {
     // c0 = nugget
-    // c1 = sill
+    // c1 = partial sill
     // a = range
 
-    // Our objective function to minimize
-    // Use clojure to capture the empirical variogram_bins
+    // Weighted least-squares objective. Parameters are kept in physically
+    // meaningful ranges with one-sided barriers that leave the objective
+    // unchanged for valid values.
     let objective_function = |params: &[f64]| {
-        // Create model
         let c0 = params[0];
         let c1 = params[1];
         let a = params[2];
         let variogram = GaussianVariogramModel::new(c0, c1, a);
 
-        // Iterate through variogram bins and measure residual sum of squares
-        let rss: Vec<f64> = variogram_bins
-            .iter()
-            .map(|bin| {
-                let actual = bin.mean();
-                if actual.is_nan() {
-                    0.
-                } else {
-                    let estimated = variogram.estimate(bin.h);
-                    // not true sum of squares - we scale by the lag dist
-                    // to avoid the influence of outliers at high h
-                    ((actual - estimated) / bin.h).powf(2.0)
-                }
-            })
-            .collect();
-
-        // Root Mean Square Error
-        let n = rss.len();
-        let rmse = (rss.into_iter().sum::<f64>() / n as f64).sqrt();
-
+        let mut objective = weighted_rmse(variogram_bins, &variogram);
         if c0 < 0. {
-            // Penalize negatives to enforce the constraint
-            rmse * -200. * c0
-        } else {
-            rmse
+            objective *= 1.0 + 200.0 * c0.abs();
         }
+        if c1 < 0. {
+            objective *= 1.0 + 200.0 * c1.abs();
+        }
+        if a <= 0. {
+            objective *= 1.0 + 200.0 * a.abs();
+        }
+        objective
     };
+
+    // Start the nugget at the empirical intercept rather than zero; a zero
+    // start biases the simplex toward a zero nugget.
+    let init_c0 = estimated_nugget(variogram_bins);
 
     // Run the optimization
     let params = nelder_mead(
         objective_function,
-        &[0.0, init_c1, init_a],
+        &[init_c0, (init_c1 - init_c0).max(0.0), init_a],
         80_000,
         80_000,
-        1e-4,
-        1000.,
+        1e-6,
+        1e-8,
     );
 
-    // Create model
-    let c0 = params[0];
-    let c0 = {
-        if c0 < 0. {
-            0.
-        } else {
-            c0
-        }
-    };
-
-    let c1 = params[1];
-    let a = params[2];
+    // Create model (the barriers keep these valid, but clamp as a safety net)
+    let c0 = params[0].max(0.0);
+    let c1 = params[1].max(0.0);
+    let a = params[2].max(1e-6);
     let model = GaussianVariogramModel::new(c0, c1, a);
     eprintln!("{}", render_variogram_text(variogram_bins, &model));
     eprintln!("{:?}", model);
