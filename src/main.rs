@@ -104,10 +104,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         None => default_output(&args.points, "stddev"),
     };
 
-    eprintln!("Outputs:");
-    eprintln!("\tprediction grid: {}", prediction_grid);
-    eprintln!("\tstdev grid: {}", stdev_grid);
-
     // -------- Create empirical semivariogram from a sample
     eprintln!("Empirical semivariogram ...");
     let samples = locs.iter().sample(&mut rng, args.samples);
@@ -185,6 +181,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         NODATA,
         &stdev_data,
     )?;
+
+    eprintln!("Outputs:");
+    eprintln!("\tprediction grid: {}", prediction_grid);
+    eprintln!("\tstdev grid: {}", stdev_grid);
 
     Ok(())
 }

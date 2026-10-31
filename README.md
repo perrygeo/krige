@@ -47,20 +47,68 @@ nix run . -- <input> [OPTIONS]
 
 ## Test
 
-Input: `test.xyz`, a tab-delimited `X Y Z` text file with 200 points.
+Input: `example/adsb_messages.gpgk`, roughly 22k points with RSSI signal strength.
 
-<img src="img/pts.png" height="400px">
+<img src="img/adsb-points.png">
+
+Build the binary and run it
 
 ```
-nix run . -- test.xyz
-```
-
+$ nix build
+$ result/bin/rust-interpolate example/adsb_messages.gpkg --field rssi_db --target-width 1000 --range 1.0
+Reading point locations...
+Create spatial index and removing dups...
+extent [-106.0542713512074, 39.8455810546875, -103.58272205699575, 41.64683532714844]
+Empirical semivariogram ...
+            |                           ×                                               ×
+   27.71593-|                          ××                                                ××
+            |                          ×             ×     ×                            ××××
+            |                         ××   ×          ×  ××××                           ×
+            |                        ×   ××××         ××××××××          ××
+            |                             × ×××     ×× ××    ××         ××
+            |                       ×     ●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●
+   25.71593-|                     ××× ●●●●●   ×              ×× ×      ×× ×××          ×
+            |                     ×●●●●       ×× ××××           × ×   ××   × ××  × ×
+ S          |                    ●●●           ×××××             ×××× ×     ××××  ×× ××
+ e          |                  ●●●              × ×               ×  ×        ××××××××
+ m          |              ×  ●● ×                                   ×
+ i          |           × ××●●● ××
+ v 23.71593-|         ×××× ●●  ××
+ a          |        ××× ●●    ×
+ r          |       ××  ●●    ×
+ i          |      ××  ●●     ×
+ a          |      × ●●     ×××
+ n 21.71593-|      ×●●      ××
+ c          |    ××●●        ×
+ e          |     ●●
+            |   ×●●
+            |  ×●
+            | ●●
+   19.71593-| ●
+            |●×
+            |×
+            |×
+            |
+            |
+   17.71593-+ +------------------------------------------------------------------------------
+              |               |               |               |               |
+           0.00391         0.20391         0.40391         0.60391         0.80391
+                                              Lag Distance (h)
+SphericalVariogramModel { c0: 18.830461606609013, c1: 7.028659853786457, a: 0.42304102448560377 }
+Making predictions on grid... 1000 x 729 with cellsize 0.0024715492942116554
 Outputs:
+        prediction grid: example/adsb_messages.prediction.tif
+        stdev grid: example/adsb_messages.stddev.tif
+```
 
-1. `test.prediction.tif` — predicted value grid (Float64 GeoTIFF)
-2. `test.stddev.tif` — standard deviation grid (Float64 GeoTIFF)
 
-<img src="img/grid.png" height="400px">
+The prediction grid
+
+<img src="img/adsb-prediction.png">
+
+The standard deviation grid (Float64 GeoTIFF)
+
+<img src="img/adsb-stddev.png">
 
 ```
 ➥ gdalinfo test.prediction.tif -mm
