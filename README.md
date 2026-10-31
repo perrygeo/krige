@@ -34,22 +34,43 @@ The build links against the system GDAL from the pinned `nixpkgs`; no GDAL sourc
 ## Usage
 
 ```
-nix run . -- <input> [OPTIONS]
+$ result/bin/rust-interpolate --help
+Usage: rust-interpolate [OPTIONS] <POINTS>
+
+Arguments:
+  <POINTS>  Path to a GDAL-readable vector dataset of point observations
+
+Options:
+  -f, --field <FIELD>
+          Attribute field to use for the observed value (z) [default: z]
+  -l, --layer <LAYER>
+          Vector layer name to read (defaults to the first layer)
+  -s, --samples <SAMPLES>
+          Number of locations to sample for the empirical semivariogram [default: 5000]
+  -n, --nbins <NBINS>
+          Number of lag bins for the empirical semivariogram [default: 256]
+  -m, --max-neighbors <MAX_NEIGHBORS>
+          Max Number of neighboring data points to consider [default: 16]
+  -t, --target-width <TARGET_WIDTH>
+          Target width of the output raster [default: 256]
+  -r, --range <RANGE>
+          Maxiumum Range or Lag distance to consider
+  -p, --prediction-grid <PREDICTION_GRID>
+          Output the raster grid of predicted values. Default <points>.prediction.tif
+  -s, --stdev-grid <STDEV_GRID>
+          Output the raster grid of standard deviations. Default <points>.stddev.tif
+  -h, --help
+          Print help
+  -V, --version
+          Print versionix run . -- <input> [OPTIONS]
 ```
 
-- `<input>` — any GDAL-readable point dataset.
-  - `.gpkg`, `.shp`, `.fgb`, `.geojson`, … are opened by their native drivers.
-  - Plain-text `.xyz` / `.txt` / `.tsv` / `.psv` / `.csv` files are read through the GDAL CSV driver (tab-separated for `.xyz`/`.txt`/`.tsv`, comma for `.csv`/`.psv`). Common X/Y/Z column names (`x`, `lon`, `longitude`, `field_1`, …) are mapped automatically.
-- `--field <name>` — attribute field holding the observed value (default `z`). For 3D points or XYZ text, the geometry Z coordinate is used as a fallback.
-- `--layer <name>` — vector layer name (defaults to the first layer).
-- `-s, --samples`, `-n, --nbins`, `-m, --max-neighbors`, `-w, --target-width`, `-r, --range` — kriging parameters (see `--help`).
-- `--prediction-grid`, `--stdev-grid` — output GeoTIFF paths (default `<input>.prediction.tif` / `<input>.stddev.tif`).
 
-## Test
+## Example
 
-Input: `example/adsb_messages.gpgk`, roughly 22k points with RSSI signal strength.
+Input: `example/adsb_messages.gpgk`, roughly 22k points with a numeric column for RSSI signal strength.
 
-<img src="img/adsb-points.png">
+<img src="img/adsb-points.png" height="500px">
 
 Build the binary and run it
 
@@ -102,25 +123,14 @@ Outputs:
 ```
 
 
-The prediction grid
+The prediction grid (Float64 GeoTIFF)
 
-<img src="img/adsb-prediction.png">
+<img src="img/adsb-predictions.png" height="500px">
 
 The standard deviation grid (Float64 GeoTIFF)
 
-<img src="img/adsb-stddev.png">
+<img src="img/adsb-stddev.png" height="500px">
 
-```
-➥ gdalinfo test.prediction.tif -mm
-Driver: GTiff/GeoTIFF
-Files: test.prediction.tif
-Size is 256, 410
-Origin = (-125.002956666700001,42.018268333300000)
-Pixel Size = (0.001311588541797,-0.001311588541797)
-Band 1 Block=256x4 Type=Float64, ColorInterp=Gray
-    Computed Min/Max=-1124.534,-556.183
-  NoData Value=-9999
-```
 
 ## Maybe, someday?
 
